@@ -1,6 +1,7 @@
 package gitlab
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -177,48 +178,73 @@ func (c *Client) ListProjects(groupID string) ([]Project, error) {
 	return allProjects, nil
 }
 
+// Structs for JSON encoding
+type protectPayload struct {
+	Name           string              `json:"name"`
+	AllowedToPush  []accessLevelHolder `json:"allowed_to_push"`
+	AllowedToMerge []accessLevelHolder `json:"allowed_to_merge"`
+}
+
+type accessLevelHolder struct {
+	AccessLevel int `json:"access_level"`
+}
+
 // ProtectBranch sets branch protection for “branchName” to developers+maintainers
 func (c *Client) ProtectBranch(projectID int, branchName string) error {
-	params := url.Values{
-		"name": {branchName},
-		// deprecated (for old gitlab)
-		"push_access_level":  {strconv.Itoa(c.pushAccessLevel)},
-		"merge_access_level": {strconv.Itoa(c.mergeAccessLevel)},
-		// new gitlab
-		"allowed_to_push[][access_level]":  {strconv.Itoa(c.pushAccessLevel)},
-		"allowed_to_merge[][access_level]": {strconv.Itoa(c.mergeAccessLevel)},
+	payload := protectPayload{
+		Name: branchName,
+		AllowedToPush: []accessLevelHolder{
+			{AccessLevel: c.pushAccessLevel},
+		},
+		AllowedToMerge: []accessLevelHolder{
+			{AccessLevel: c.mergeAccessLevel},
+		},
+	}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal payload: %w", err)
 	}
 
-	resp, err := c.doRequest("POST", "/projects/"+strconv.Itoa(projectID)+"/protected_branches", params, nil)
+	postURL := fmt.Sprintf("%s/projects/%d/protected_branches", c.baseURL, projectID)
+	req, err := http.NewRequest("POST", postURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return err
 	}
+	req.Header.Set("Private-Token", c.token)
+	req.Header.Set("Content-Type", "application/json")
 
-	body, _ := io.ReadAll(resp.Body)
-	defer resp.Body.Close()
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
 
-	if resp.StatusCode == 201 {
+	switch resp.StatusCode {
+	case http.StatusCreated:
 		return nil
-	}
-	if resp.StatusCode != 409 {
-		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	case http.StatusConflict:
+	default:
+		return fmt.Errorf("create status %d: %s", resp.StatusCode, string(data))
 	}
 
-	updatePath := fmt.Sprintf(
-		"/projects/%d/protected_branches/%s",
-		projectID,
-		url.PathEscape(branchName),
-	)
-	resp2, err := c.doRequest("PATCH", updatePath, params, nil)
+	patchURL := fmt.Sprintf("%s/projects/%d/protected_branches/%s", c.baseURL, projectID, url.PathEscape(branchName))
+	req2, err := http.NewRequest("PATCH", patchURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return err
 	}
+	req2.Header.Set("Private-Token", c.token)
+	req2.Header.Set("Content-Type", "application/json")
 
-	body2, _ := io.ReadAll(resp2.Body)
-	defer resp2.Body.Close()
+	resp2, err := c.httpClient.Do(req2)
+	if err != nil {
+		return err
+	}
+	data2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
 
 	if resp2.StatusCode >= 400 {
-		return fmt.Errorf("update status %d: %s", resp2.StatusCode, string(body2))
+		return fmt.Errorf("update status %d: %s", resp2.StatusCode, string(data2))
 	}
 
 	return nil
