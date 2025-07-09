@@ -189,11 +189,32 @@ func (c *Client) ProtectBranch(projectID int, branchName string) error {
 	if err != nil {
 		return err
 	}
+
+	body, _ := io.ReadAll(resp.Body)
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
+	if resp.StatusCode == 201 {
+		return nil
+	}
+	if resp.StatusCode != 409 {
+		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	updatePath := fmt.Sprintf(
+		"/projects/%d/protected_branches/%s",
+		projectID,
+		url.PathEscape(branchName),
+	)
+	resp2, err := c.doRequest("PUT", updatePath, params, nil)
+	if err != nil {
+		return err
+	}
+
+	body2, _ := io.ReadAll(resp2.Body)
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode >= 400 {
+		return fmt.Errorf("update status %d: %s", resp2.StatusCode, string(body2))
 	}
 
 	return nil
