@@ -88,19 +88,25 @@ func ProcessGroup(glClient *Client, groupID, groupName string) {
 		log.Printf("ERROR: get projects of group: %s (ID=%s): %v", groupName, groupID, err)
 	} else {
 		for _, project := range projectList {
-			branches := []string{"main", "master"}
+			protectedBranches := []string{"main", "master"}
 
 			if project.DefaultBranch != "" && project.DefaultBranch != "main" && project.DefaultBranch != "master" {
-				branches = append([]string{project.DefaultBranch}, branches...)
+				protectedBranches = append([]string{project.DefaultBranch}, protectedBranches...)
 			}
 
-			for _, br := range branches {
-				if exists, _ := glClient.BranchExists(project.ID, br); !exists {
+			for _, branch := range protectedBranches {
+				isBranchExists, err := glClient.BranchExists(project.ID, branch)
+				if err != nil {
+					log.Printf("ERROR: check branch: %s in project: %s (ID=%d): %v", branch, project.Name, project.ID, err)
 					continue
 				}
 
-				if err = glClient.EnsureBranchProtection(project.ID, br); err != nil {
-					log.Printf("Ошибка защиты ветки %s в проекте %s (ID=%d): %v", br, project.Name, project.ID, err)
+				if !isBranchExists {
+					continue
+				}
+
+				if err = glClient.EnsureBranchProtection(project.ID, branch); err != nil {
+					log.Printf("ERROR: protect branch: %s in project: %s (ID=%d): %v", branch, project.Name, project.ID, err)
 				}
 			}
 		}
