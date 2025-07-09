@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 )
 
 // Client GitLab API wrapper
@@ -224,31 +223,40 @@ func (c *Client) EnsureBranchProtection(projectID int, branchName string) error 
 	}
 
 	postPath := fmt.Sprintf("/projects/%d/protected_branches", projectID)
-	resp, err := c.doRequest("POST", postPath, params, strings.NewReader(params.Encode()))
+	resp, err := c.doRequest("POST", postPath, params, nil)
 	if err != nil {
 		return err
 	}
-	body, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	switch resp.StatusCode {
-	case http.StatusCreated:
+	if resp.StatusCode == http.StatusCreated {
 		return nil
-	case http.StatusConflict:
-	default:
-		return fmt.Errorf("create status %d: %s", resp.StatusCode, body)
+	}
+	if resp.StatusCode != http.StatusConflict {
+		return fmt.Errorf("create failed: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	patchPath := fmt.Sprintf("/projects/%d/protected_branches/%s", projectID, url.PathEscape(branchName))
-	resp2, err := c.doRequest("PATCH", patchPath, params, strings.NewReader(params.Encode()))
+	deletePath := fmt.Sprintf("/projects/%d/protected_branches/%s",
+		projectID, url.PathEscape(branchName))
+	resp, err = c.doRequest("DELETE", deletePath, nil, nil)
 	if err != nil {
 		return err
 	}
-	body2, _ := io.ReadAll(resp2.Body)
-	resp2.Body.Close()
+	respBody, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("delete failed: status %d: %s", resp.StatusCode, string(respBody))
+	}
 
-	if resp2.StatusCode >= 400 {
-		return fmt.Errorf("update status %d: %s", resp2.StatusCode, body2)
+	resp, err = c.doRequest("POST", postPath, params, nil)
+	if err != nil {
+		return err
+	}
+	respBody, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("re-create failed: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	return nil
