@@ -1,0 +1,7 @@
+{
+  "gitlab_base_url": "https://gitlab.example.com",
+  "gitlab_token": "YOUR_PERSONAL_ACCESS_TOKEN",
+  "root_group_path": "instance/test",
+  "push_access_level": 30,
+  "merge_access_level": 30
+}
