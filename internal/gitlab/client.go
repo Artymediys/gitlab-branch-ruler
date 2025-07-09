@@ -205,7 +205,7 @@ func (c *Client) ProtectBranch(projectID int, branchName string) error {
 		projectID,
 		url.PathEscape(branchName),
 	)
-	resp2, err := c.doRequest("PUT", updatePath, params, nil)
+	resp2, err := c.doRequest("PATCH", updatePath, params, nil)
 	if err != nil {
 		return err
 	}
