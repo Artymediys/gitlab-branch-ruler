@@ -88,12 +88,20 @@ func ProcessGroup(glClient *Client, groupID, groupName string) {
 		log.Printf("ERROR: get projects of group: %s (ID=%s): %v", groupName, groupID, err)
 	} else {
 		for _, project := range projectList {
-			if project.DefaultBranch == "" {
-				continue
+			branches := []string{"main", "master"}
+
+			if project.DefaultBranch != "" && project.DefaultBranch != "main" && project.DefaultBranch != "master" {
+				branches = append([]string{project.DefaultBranch}, branches...)
 			}
 
-			if err = glClient.EnsureBranchProtection(project.ID, project.DefaultBranch); err != nil {
-				log.Printf("ERROR: project: %s (ID=%d): %v", project.Name, project.ID, err)
+			for _, br := range branches {
+				if exists, _ := glClient.BranchExists(project.ID, br); !exists {
+					continue
+				}
+
+				if err = glClient.EnsureBranchProtection(project.ID, br); err != nil {
+					log.Printf("Ошибка защиты ветки %s в проекте %s (ID=%d): %v", br, project.Name, project.ID, err)
+				}
 			}
 		}
 	}
@@ -176,6 +184,29 @@ func (c *Client) ListProjects(groupID string) ([]Project, error) {
 	}
 
 	return allProjects, nil
+}
+
+// BranchExists checks if project has “branchName”
+func (c *Client) BranchExists(projectID int, branchName string) (bool, error) {
+	reqURL := fmt.Sprintf("%s/projects/%d/repository/branches/%s", c.baseURL, projectID, url.PathEscape(branchName))
+	req, _ := http.NewRequest("GET", reqURL, nil)
+	req.Header.Set("Private-Token", c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return true, nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	return false, fmt.Errorf("status %d: %s", resp.StatusCode, body)
 }
 
 // Structs for JSON encoding
