@@ -180,9 +180,13 @@ func (c *Client) ListProjects(groupID string) ([]Project, error) {
 // ProtectBranch sets branch protection for “branchName” to developers+maintainers
 func (c *Client) ProtectBranch(projectID int, branchName string) error {
 	params := url.Values{
-		"name":               {branchName},
+		"name": {branchName},
+		// deprecated (for old gitlab)
 		"push_access_level":  {strconv.Itoa(c.pushAccessLevel)},
 		"merge_access_level": {strconv.Itoa(c.mergeAccessLevel)},
+		// new gitlab
+		"allowed_to_push[][access_level]":  {strconv.Itoa(c.pushAccessLevel)},
+		"allowed_to_merge[][access_level]": {strconv.Itoa(c.mergeAccessLevel)},
 	}
 
 	resp, err := c.doRequest("POST", "/projects/"+strconv.Itoa(projectID)+"/protected_branches", params, nil)
