@@ -92,7 +92,7 @@ func ProcessGroup(glClient *Client, groupID, groupName string) {
 				continue
 			}
 
-			if err = glClient.ProtectBranch(project.ID, project.DefaultBranch); err != nil {
+			if err = glClient.EnsureBranchProtection(project.ID, project.DefaultBranch); err != nil {
 				log.Printf("ERROR: project: %s (ID=%d): %v", project.Name, project.ID, err)
 			}
 		}
@@ -180,7 +180,7 @@ func (c *Client) ListProjects(groupID string) ([]Project, error) {
 
 // Structs for JSON encoding
 type protectPayload struct {
-	Name           string              `json:"name"`
+	Name           string              `json:"name,omitempty"`
 	AllowedToPush  []accessLevelHolder `json:"allowed_to_push"`
 	AllowedToMerge []accessLevelHolder `json:"allowed_to_merge"`
 }
@@ -189,16 +189,12 @@ type accessLevelHolder struct {
 	AccessLevel int `json:"access_level"`
 }
 
-// ProtectBranch sets branch protection for “branchName” to developers+maintainers
-func (c *Client) ProtectBranch(projectID int, branchName string) error {
+// EnsureBranchProtection sets branch protection for “branchName”
+func (c *Client) EnsureBranchProtection(projectID int, branchName string) error {
 	payload := protectPayload{
-		Name: branchName,
-		AllowedToPush: []accessLevelHolder{
-			{AccessLevel: c.pushAccessLevel},
-		},
-		AllowedToMerge: []accessLevelHolder{
-			{AccessLevel: c.mergeAccessLevel},
-		},
+		Name:           branchName,
+		AllowedToPush:  []accessLevelHolder{{c.pushAccessLevel}},
+		AllowedToMerge: []accessLevelHolder{{c.mergeAccessLevel}},
 	}
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -206,45 +202,105 @@ func (c *Client) ProtectBranch(projectID int, branchName string) error {
 	}
 
 	postURL := fmt.Sprintf("%s/projects/%d/protected_branches", c.baseURL, projectID)
-	req, err := http.NewRequest("POST", postURL, bytes.NewReader(bodyBytes))
+	patchURL := fmt.Sprintf("%s/projects/%d/protected_branches/%s", c.baseURL, projectID, url.PathEscape(branchName))
+
+	doJSON := func(method, url string, data []byte) (int, []byte, error) {
+		req, err := http.NewRequest(method, url, bytes.NewReader(data))
+		if err != nil {
+			return 0, nil, err
+		}
+		req.Header.Set("Private-Token", c.token)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return 0, nil, err
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		return resp.StatusCode, respBody, nil
+	}
+
+	status, respBody, err := doJSON("POST", postURL, bodyBytes)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Private-Token", c.token)
-	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	data, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-
-	switch resp.StatusCode {
+	switch status {
 	case http.StatusCreated:
 		return nil
 	case http.StatusConflict:
 	default:
-		return fmt.Errorf("create status %d: %s", resp.StatusCode, string(data))
+		return fmt.Errorf("create %d: %s", status, respBody)
 	}
 
-	patchURL := fmt.Sprintf("%s/projects/%d/protected_branches/%s", c.baseURL, projectID, url.PathEscape(branchName))
-	req2, err := http.NewRequest("PATCH", patchURL, bytes.NewReader(bodyBytes))
+	status, respBody, err = doJSON("PATCH", patchURL, bodyBytes)
 	if err != nil {
 		return err
 	}
+	if status < 400 {
+		ok, err := c.protectionHasLevel(projectID, branchName, c.pushAccessLevel)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+	}
+
+	// 4) если PATCH вернул ошибку или уровни не обновились — удаляем и создаём заново
+	return c.deleteAndRecreateProtection(postURL, patchURL, bodyBytes)
+}
+
+// protectionHasLevel ensure a branch has access level
+func (c *Client) protectionHasLevel(projectID int, branchName string, level int) (bool, error) {
+	getURL := fmt.Sprintf("%s/projects/%d/protected_branches/%s", c.baseURL, projectID, url.PathEscape(branchName))
+	req, err := http.NewRequest("GET", getURL, nil)
+	if err != nil {
+		return false, err
+	}
+
+	req.Header.Set("Private-Token", c.token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	pattern := fmt.Sprintf(`"access_level":%d`, level)
+	return bytes.Contains(data, []byte(pattern)), nil
+}
+
+// deleteAndRecreateProtection hard recreate branch protection
+func (c *Client) deleteAndRecreateProtection(postURL, delURL string, bodyBytes []byte) error {
+	req, _ := http.NewRequest("DELETE", delURL, nil)
+	req.Header.Set("Private-Token", c.token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("delete %d: %s", resp.StatusCode, data)
+	}
+
+	req2, _ := http.NewRequest("POST", postURL, bytes.NewReader(bodyBytes))
 	req2.Header.Set("Private-Token", c.token)
 	req2.Header.Set("Content-Type", "application/json")
-
 	resp2, err := c.httpClient.Do(req2)
 	if err != nil {
 		return err
 	}
+
 	data2, _ := io.ReadAll(resp2.Body)
 	resp2.Body.Close()
-
 	if resp2.StatusCode >= 400 {
-		return fmt.Errorf("update status %d: %s", resp2.StatusCode, string(data2))
+		return fmt.Errorf("re-create %d: %s", resp2.StatusCode, data2)
 	}
 
 	return nil
